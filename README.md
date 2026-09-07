@@ -1,2 +1,112 @@
-# stm32-fpu-free-svpwm
-A production-ready, FPU-free Space Vector PWM (SVPWM) library for STM32 microcontrollers. Implements Min-Max zero sequence injection and Q15 fixed-point math for maximum efficiency on resource-constrained MCUs.
+<div align="center">
+
+# Advanced SVPWM Masterclass 
+**FPU-Free, Fixed-Point Space Vector PWM Library for STM32**
+
+[![Platform](https://img.shields.io/badge/Platform-STM32-blue.svg)](#)
+[![Language](https://img.shields.io/badge/Language-C99%2FC11-orange.svg)](#)
+[![Architecture](https://img.shields.io/badge/Architecture-Object--Oriented-success.svg)](#)
+[![Math](https://img.shields.io/badge/Math-Q15%20Fixed--Point-yellow.svg)](#)
+
+</div>
+
+## 📖 Overview
+Standard Sinusoidal Pulse Width Modulation (SPWM) inherently leaves **13.4% of the DC bus voltage** completely unused before entering the clipping (overmodulation) region. This repository provides a production-ready, highly optimized **Space Vector PWM (SVPWM)** library designed specifically for resource-constrained embedded systems and motor control applications. 
+
+By utilizing **Min-Max Zero Sequence Injection**, this algorithm flattens the phase voltage peaks (creating "saddle waves"), preventing them from hitting the 100% duty cycle ceiling. This allows the fundamental amplitude to be boosted by 15.4%, extracting maximum efficiency from the power source while delivering a 100% pure, unclipped Line-to-Line sine wave to the motor windings.
+
+---
+
+## ⚙️ Core Concepts & Algorithm
+
+### 1. The SVPWM Min-Max Algorithm
+Traditional SVPWM implementations require heavy trigonometric calculations, sector identification, and angle tracking. This library utilizes the carrier-based approach, achieving the exact same geometry using highly efficient linear algebra:
+1. **Inverse Clarke Transform:** Converts the orthogonal `V_alpha` and `V_beta` vectors into 3-phase components (`Va, Vb, Vc`).
+2. **Min-Max Detection:** Identifies the phase with the highest and lowest voltage at every computation cycle.
+3. **Zero Sequence Offset:** Calculates the offset voltage as the inverted average of the extremes:  
+   `V_offset = -(V_max + V_min) / 2`
+4. **Saddle Wave Generation:** Injects `V_offset` into all three phases. Because the motor's neutral point is floating, the windings only react to the Line-to-Line voltage difference (e.g., `Vab = Va - Vb`). The shared `V_offset` cancels out mathematically, yielding a pure sine wave across the motor.
+
+### 2. Gordon Smith Digital Oscillator (Simulation)
+To test and simulate the SVPWM algorithm without a physical Field-Oriented Control (FOC) loop, we must synthesize the V_alpha and V_beta reference vectors. Instead of using computationally expensive `<math.h>` functions (`sin`/`cos`), the simulation script (`svpwm_simulation.py`) utilizes a **Gordon Smith Digital Oscillator**.
+
+This oscillator uses cross-coupled Euler integration to generate perfect sine and cosine waves using only integer addition and bit-shifting:
+```c
+v_alpha = v_alpha - ((k_speed * v_beta) >> 15);
+v_beta  = v_beta  + ((k_speed * v_alpha) >> 15);
+```
+*The `k_speed` parameter dictates the rotational frequency. This guarantees that the Python simulation output and the C implementation behave identically.*
+
+---
+
+## 🚀 Key Features & Engineering Principles
+This library is built strictly upon advanced embedded software engineering standards:
+
+* **Object-Oriented C Architecture:** All system states, hardware timer limits, and output buffers are completely encapsulated within a dedicated `SVPWM_Handle_t` structure.
+* **Zero Global Variables:** Absolute memory safety with no global state dependencies.
+* **FPU-Free Execution:** Utilizes **Q15 Fixed-Point Mathematics** (e.g., 0.866025 is pre-scaled to `28378`). Multiplications are performed as standard integer operations and normalized via highly efficient bitwise right-shifts (`>> 15`).
+* **Interrupt & Thread Safe:** The core update logic (`SVPWM_Update`) is completely non-blocking and contains no dynamic memory allocation (`malloc`/`free`), making it safe to execute inside high-frequency Timer or DMA interrupt service routines.
+
+---
+
+## 📁 Repository Structure
+* `/Core/Inc/svpwm.h` - The encapsulated Handle Typedef and API prototypes.
+* `/Core/Src/svpwm.c` - The core Q15 fixed-point algorithm and Min-Max injection logic.
+* `/Simulation/svpwm_simulation.py` - Python script validating the Gordon Smith Oscillator, generating the Saddle Waves, and plotting the pure Line-to-Line voltages using `matplotlib`.
+
+---
+
+## 🛠️ Integration Guide
+
+### 1. Structure Initialization
+Create an instance of the handle and initialize it with your specific Timer Auto-Reload Register (ARR) value and hardware timer instance.
+
+```c
+#include "svpwm.h"
+
+// Instantiate the SVPWM Handle
+SVPWM_Handle_t Motor1_Drive;
+
+void Setup_Motor_Control(void) {
+    // Initialize with Timer ARR value (e.g., 2000 for PWM frequency definition)
+    // Pass the hardware timer instance (e.g., &htim1)
+    SVPWM_Init(&Motor1_Drive, 2000, &htim1);
+}
+```
+
+### 2. High-Frequency Update Routine
+In your motor control loop (typically synchronized with the PWM update interrupt or ADC injection), pass the Q15 formatted `V_alpha` and `V_beta` vectors generated by your FOC loop.
+
+```c
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+    if (htim->Instance == TIM1) {
+        // Fetch orthogonal reference signals from FOC loop (Q15 Format)
+        int32_t valpha = Get_FOC_Valpha();
+        int32_t vbeta = Get_FOC_Vbeta();
+        
+        // Execute SVPWM Injection
+        SVPWM_Update(&Motor1_Drive, valpha, vbeta);
+        
+        // Map computed duty cycles to Timer CCR registers
+        TIM1->CCR1 = Motor1_Drive.ccr_a;
+        TIM1->CCR2 = Motor1_Drive.ccr_b;
+        TIM1->CCR3 = Motor1_Drive.ccr_c;
+    }
+}
+```
+
+---
+
+## 🧪 Hardware Simulation Note (Proteus)
+When validating this algorithm via hardware simulation (e.g., Proteus), do not probe the raw PWM timer pins directly. To observe the physical result:
+1. Interface each timer output with an **RC Low-Pass Filter** (e.g., 10k Ohm resistor and 1uF capacitor) to act as an analog integrator.
+2. To observe the pure Line-to-Line sine wave, connect Oscilloscope Channel A to Phase A, Channel B to Phase B, activate the **Invert** function on Channel B, and enable the **ADD** function.
+
+---
+
+<div align="center">
+  
+**Developed by Mohammad Hosseini ([MimHosseini](https://github.com/MimHosseini))**  
+*Embedded Systems Engineer & Founder of Esfahan Drive*
+
+</div>
